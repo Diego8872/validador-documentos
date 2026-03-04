@@ -425,7 +425,7 @@ def generar_reporte(xl, fc_data, co, op_id):
 
 # ── UI ───────────────────────────────────────────────────────────────────────
 
-st.markdown("# "Corrector CO Natura")
+st.markdown("# Corrector CO Natura")
 st.markdown('<p class="subtitle">Cruce automático Excel · CO · FC</p>', unsafe_allow_html=True)
 st.markdown('<hr class="divider">', unsafe_allow_html=True)
 
