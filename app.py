@@ -4,7 +4,7 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 import pdfplumber
 
 st.set_page_config(
-    page_title="Validador de Documentos",
+    page_title="Corrector CO Natura",
     page_icon="📋",
     layout="centered"
 )
@@ -425,7 +425,7 @@ def generar_reporte(xl, fc_data, co, op_id):
 
 # ── UI ───────────────────────────────────────────────────────────────────────
 
-st.markdown("# 📋 Validador de Documentos")
+st.markdown("# 📋 "Corrector CO Natura")
 st.markdown('<p class="subtitle">Cruce automático Excel · CO · FC</p>', unsafe_allow_html=True)
 st.markdown('<hr class="divider">', unsafe_allow_html=True)
 
