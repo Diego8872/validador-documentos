@@ -220,7 +220,9 @@ def leer_co_pdf(path):
     pattern = re.compile(
         r'^\s*(\d{1,2})\s+(\d{4}\.\d{2}\.\d{2})[^\n]*?([\d\.]+,\d{3})\s+p[çc°¢]\s+([\d\.]+,\d{3})'
     )
-    mat_re = re.compile(r'(?:;\s*)?(\d{7,8})\s*$')
+
+    # FIX: acepta material seguido de espacio+fecha o fin de línea
+    mat_re = re.compile(r'(?:;\s*)?(\d{7,8})(?:\s|$)')
 
     items = []
     for i, l in enumerate(full_lines):
@@ -272,7 +274,6 @@ def leer_co_pdf(path):
             pages = convert_from_bytes(pdf_bytes, dpi=250)
             texts = [pytesseract.image_to_string(p, lang='eng') for p in pages]
             full_lines = '\n'.join(texts).split('\n')
-            # re-parsear con OCR
             pattern_ocr = re.compile(r'(\d{4}\.\d{2}\.\d{2})[^\n]*?([\d\.]+,\d{3})\s+p[¢cç°]\s+([\d\.]+,\d{3})', re.IGNORECASE)
             for i, l in enumerate(full_lines):
                 m = pattern_ocr.search(l)
@@ -457,7 +458,6 @@ if todos_ok:
     if st.button("⚡ Generar Reporte"):
         with st.spinner("Procesando documentos..."):
             try:
-                # guardar temporalmente
                 import tempfile
                 with tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False) as f:
                     f.write(excel_file.read()); excel_path = f.name
@@ -480,7 +480,6 @@ if todos_ok:
 
                 buf = generar_reporte(xl, fc_data, co, op_id)
 
-                # limpiar temp
                 for p in [excel_path, co_path, fc_path]:
                     try: os.unlink(p)
                     except: pass
