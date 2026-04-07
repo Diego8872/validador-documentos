@@ -349,7 +349,32 @@ def generar_reporte(xl, fc_data, co, op_id):
     for col, w in zip('ABCDEFG', [18, 28, 32, 32, 16, 35, 10]):
         ws.column_dimensions[col].width = w
 
-    co_by_material = {ci['material']: ci for ci in co['items'] if ci['material']}
+    # co_by_material como lista para soportar material duplicado (ej: 50241223 x2)
+    from collections import defaultdict
+    co_by_material = defaultdict(list)
+    for ci in co['items']:
+        if ci['material']:
+            co_by_material[ci['material']].append(ci)
+
+    # Para cada item del Excel, busca el mejor match en CO por cantidad
+    def buscar_co_item(mat_int, cant_excel):
+        candidatos = co_by_material.get(mat_int, [])
+        if not candidatos:
+            return None
+        # Intentar match exacto o con conversión gr↔kg
+        for ci in candidatos:
+            cq = ci['cantidad_num']
+            # Match directo
+            if abs(cant_excel - cq) < 0.01:
+                return ci
+            # Excel en kg, CO en gr
+            if abs(cant_excel * 1000 - cq) < 0.5:
+                return ci
+            # Excel en gr, CO en kg
+            if abs(cant_excel / 1000 - cq) < 0.0001:
+                return ci
+        # Si no hay match exacto, devolver el primero (para mostrar la diferencia)
+        return candidatos[0]
 
     row = 3
     style_section(ws, row, 'LÓGICA 1 — Excel (Solapa Item) vs PDF CO'); row += 1
@@ -358,16 +383,22 @@ def generar_reporte(xl, fc_data, co, op_id):
     row += 1
     for item in xl['items']:
         ref = item['MARCA_MODEL_OTRO']
-        co_item = co_by_material.get(int(ref)) if ref and str(ref).replace('.','').isdigit() else None
+        cant_exc = parse_num(str(item['CANTIDAD']))
+        co_item = buscar_co_item(int(ref), cant_exc) if ref and str(ref).replace('.','').isdigit() else None
         ncm_display = str(item['NCM'])[:10] if item['NCM'] else ''
         ncm_10 = ncm_display.replace('.','')
         if co_item:
             res_ncm  = "✅ OK" if ncm_10 == co_item['ncm'].replace('.','') else "❌ DIFERENCIA"
-            cant_exc = float(str(item['CANTIDAD']).replace(',','.'))
-            res_cant = "✅ OK" if abs(cant_exc - co_item['cantidad_num']) < 0.01 else "❌ DIFERENCIA"
+            cq = co_item['cantidad_num']
+            # Comparar tolerando conversión gr↔kg
+            match_cant = (abs(cant_exc - cq) < 0.01 or
+                          abs(cant_exc * 1000 - cq) < 0.5 or
+                          abs(cant_exc / 1000 - cq) < 0.0001)
+            res_cant = "✅ OK" if match_cant else "❌ DIFERENCIA"
+            cant_excel_str = str(cant_exc) if cant_exc != int(cant_exc) else str(int(cant_exc))
             rows_data = [
                 (f"{item['ITEM']} / {ref}", 'NCM', ncm_display, co_item['ncm'], res_ncm, '10 primeros caracteres'),
-                ('', 'CANTIDAD', str(int(cant_exc)), co_item['cantidad'], res_cant, 'Decimales: coma en CO'),
+                ('', 'CANTIDAD', cant_excel_str, co_item['cantidad'], res_cant, 'Tolera conversión kg↔gr'),
             ]
         else:
             rows_data = [
