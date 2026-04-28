@@ -220,6 +220,43 @@ def groq_vision_co(path):
     except Exception:
         return []
 
+def groq_vision_co_texto(path):
+    """Usa Groq Vision para extraer campos de cabecera del CO (produtor, importador, etc.) en texto plano."""
+    try:
+        from groq import Groq
+        api_key = st.secrets.get("GROQ_API_KEY", "")
+        if not api_key:
+            return []
+        client = Groq(api_key=api_key)
+        imagenes = pdf_a_imagenes_b64(path)
+        if not imagenes:
+            return []
+        # Solo primera página para cabecera
+        img_b64 = imagenes[0]
+        response = client.chat.completions.create(
+            model="meta-llama/llama-4-scout-17b-16e-instruct",
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_b64}"}},
+                    {"type": "text", "text": (
+                        "Este es un Certificado de Origen. Extraé SOLO estos campos en texto plano, "
+                        "un dato por línea, con este formato exacto:\n"
+                        "PRODUTOR: <nombre empresa productora>\n"
+                        "IMPORTADOR: <nombre empresa importadora>\n"
+                        "FACTURA: <número de factura>\n"
+                        "DATA: <fecha en formato DD/MM/YYYY>\n"
+                        "OBSERVACIONES: <texto del campo 12 observações>\n"
+                        "No agregues nada más."
+                    )}
+                ]
+            }],
+            max_tokens=1024
+        )
+        return response.choices[0].message.content.strip().split("\n")
+    except Exception:
+        return []
+
 def groq_vision_fc(path):
     """Usa Groq Vision para extraer fecha y total EXW de la FC cuando pdfplumber falla."""
     try:
@@ -332,31 +369,47 @@ def leer_co_pdf(path):
     if not texto_es_suficiente(full_lines):
         groq_items = groq_vision_co(path)  # devuelve lista de dicts JSON
 
-    produtor = ''
-    for l in full_lines[:40]:
-        if re.search(r'(industria|comercio|ltda)', l, re.IGNORECASE):
-            if not re.search(r'(certificado|origen|validez)', l, re.IGNORECASE):
-                produtor = re.split(r'(RODOVIA|ROD\.|RUA|AV\.|\bSP\b)', l, flags=re.IGNORECASE)[0].strip()
-                if produtor: break
+    # Si pdfplumber no extrajo texto, usar Groq también para cabecera
+    groq_texto_lines = []
+    if not texto_es_suficiente(full_lines):
+        groq_texto_lines = groq_vision_co_texto(path)
 
-    importador = ''
-    for i, l in enumerate(full_lines):
-        if re.search(r'2[,\.]\s*importador', l, re.IGNORECASE):
-            for j in range(i+1, min(i+6, len(full_lines))):
-                c = full_lines[j].strip()
-                if c and any(k in c.upper() for k in ['NATURA', 'S/A', 'LTDA', 'SA']):
-                    importador = re.split(r'(CAZADORES|AV\.|RUA|\d{5})', c, flags=re.IGNORECASE)[0].strip()
-                    break
-            break
+    def extraer_campo_groq(prefix, lines):
+        for l in lines:
+            if l.upper().startswith(prefix.upper() + ':'):
+                return l[len(prefix)+1:].strip()
+        return ''
 
-    factura_num = data_co = ''
-    for l in full_lines:
-        ln = unicodedata.normalize('NFD', l)
-        ln = ''.join(c for c in ln if unicodedata.category(c) != 'Mn')
-        m = re.search(r'[Nn]um[^\s:]*[:\s]+([A-Z]{0,5}\d{6,12})', ln)
-        if m and not factura_num: factura_num = m.group(1)
-        m = re.search(r'[Dd]ata[:\s]+(\d{2}/\d{2}/\d{4})', l)
-        if m and not data_co: data_co = m.group(1)
+    # Extraer campos de cabecera — Groq si pdfplumber falló, regex si hay texto
+    produtor = extraer_campo_groq('PRODUTOR', groq_texto_lines) if groq_texto_lines else ''
+    if not produtor:
+        for l in full_lines[:40]:
+            if re.search(r'(industria|comercio|ltda)', l, re.IGNORECASE):
+                if not re.search(r'(certificado|origen|validez)', l, re.IGNORECASE):
+                    produtor = re.split(r'(RODOVIA|ROD\.|RUA|AV\.|\bSP\b)', l, flags=re.IGNORECASE)[0].strip()
+                    if produtor: break
+
+    importador = extraer_campo_groq('IMPORTADOR', groq_texto_lines) if groq_texto_lines else ''
+    if not importador:
+        for i, l in enumerate(full_lines):
+            if re.search(r'2[,\.]\s*importador', l, re.IGNORECASE):
+                for j in range(i+1, min(i+6, len(full_lines))):
+                    c = full_lines[j].strip()
+                    if c and any(k in c.upper() for k in ['NATURA', 'S/A', 'LTDA', 'SA']):
+                        importador = re.split(r'(CAZADORES|AV\.|RUA|\d{5})', c, flags=re.IGNORECASE)[0].strip()
+                        break
+                break
+
+    factura_num = extraer_campo_groq('FACTURA', groq_texto_lines) if groq_texto_lines else ''
+    data_co     = extraer_campo_groq('DATA', groq_texto_lines) if groq_texto_lines else ''
+    if not factura_num or not data_co:
+        for l in full_lines:
+            ln = unicodedata.normalize('NFD', l)
+            ln = ''.join(c for c in ln if unicodedata.category(c) != 'Mn')
+            m = re.search(r'[Nn]um[^\s:]*[:\s]+([A-Z]{0,5}\d{6,12})', ln)
+            if m and not factura_num: factura_num = m.group(1)
+            m = re.search(r'[Dd]ata[:\s]+(\d{2}/\d{2}/\d{4})', l)
+            if m and not data_co: data_co = m.group(1)
 
     pattern = re.compile(
         r'^\s*(\d{1,2})\s+(\d{4}\.\d{2}\.\d{2})[^\n]*?([\d\.]+,\d{3})\s+(?:gr|kg|pc|p[çc°¢])\s+([\d\.]+,\d{3})'
@@ -443,14 +496,16 @@ def leer_co_pdf(path):
                                     break
                             break
 
-    obs_lines = []
-    capture = False
-    for l in full_lines:
-        if re.search(r'12\.\s*observa', l, re.IGNORECASE): capture = True; continue
-        if capture:
-            if re.search(r'(certificac|declarac|13\.|14\.)', l, re.IGNORECASE): break
-            if l.strip(): obs_lines.append(l.strip())
-    obs = ' '.join(obs_lines).strip()
+    obs = extraer_campo_groq('OBSERVACIONES', groq_texto_lines) if groq_texto_lines else ''
+    if not obs:
+        obs_lines = []
+        capture = False
+        for l in full_lines:
+            if re.search(r'12\.\s*observa', l, re.IGNORECASE): capture = True; continue
+            if capture:
+                if re.search(r'(certificac|declarac|13\.|14\.)', l, re.IGNORECASE): break
+                if l.strip(): obs_lines.append(l.strip())
+        obs = ' '.join(obs_lines).strip()
 
     return {'produtor': produtor, 'importador': importador, 'factura_num': factura_num,
             'data': data_co, 'items': items, 'observaciones': obs}
