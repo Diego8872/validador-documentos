@@ -192,11 +192,12 @@ def groq_vision_co(path):
                                 "type": "text",
                                 "text": (
                                     "Este es un Certificado de Origen (CO) de comercio exterior. "
-                                    "Extraé TODO el texto visible en la imagen, manteniendo la estructura línea por línea. "
-                                    "Es muy importante preservar: números de ítem, códigos NCM (formato XXXX.XX.XX), "
-                                    "cantidades con formato numérico (ej: 1.234,567), unidades (gr, kg, pc), "
-                                    "valores monetarios, y códigos de material (números de 7-8 dígitos después de ';'). "
-                                    "No agregues interpretación, solo el texto exacto línea por línea."
+                                    "Extraé el texto de esta imagen como texto plano. Sin Markdown, sin tablas con pipes, sin asteriscos. "
+                                    "Para cada fila de la tabla de productos escribí una línea así: "
+                                    "ORDEN NCM CANTIDAD UNIDAD VALOR "
+                                    "y en la línea siguiente el código de material precedido de punto y coma: ; 50568791 "
+                                    "Ejemplo de salida:\n1 3307.20.10 26.880,000 pc 104.351.116,800\n; 50568791\n "
+                                    "Preservá exactamente los números y formatos numéricos con punto y coma decimal."
                                 )
                             }
                         ]
