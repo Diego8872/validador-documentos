@@ -2,5 +2,5 @@ streamlit
 openpyxl
 pdfplumber
 pdf2image
-pytesseract
 pillow
+groq
