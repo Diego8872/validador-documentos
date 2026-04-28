@@ -1,5 +1,5 @@
 import streamlit as st
-import openpyxl, re, unicodedata, os, io
+import openpyxl, re, unicodedata, os, io, base64
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 import pdfplumber
 
@@ -147,6 +147,121 @@ def parse_num(s):
     try: return float(s)
     except: return 0.0
 
+# ── Groq Vision ──────────────────────────────────────────────────────────────
+
+def pdf_a_imagenes_b64(path, dpi=200):
+    """Convierte PDF a lista de imágenes en base64."""
+    try:
+        from pdf2image import convert_from_path
+        pages = convert_from_path(path, dpi=dpi)
+        imgs = []
+        for page in pages:
+            buf = io.BytesIO()
+            page.save(buf, format='PNG')
+            buf.seek(0)
+            imgs.append(base64.standard_b64encode(buf.read()).decode('utf-8'))
+        return imgs
+    except Exception as e:
+        return []
+
+def groq_vision_co(path):
+    """Usa Groq Vision para extraer texto del CO cuando pdfplumber falla."""
+    try:
+        from groq import Groq
+        api_key = st.secrets.get("GROQ_API_KEY", "")
+        if not api_key:
+            return []
+        client = Groq(api_key=api_key)
+        imagenes = pdf_a_imagenes_b64(path)
+        if not imagenes:
+            return []
+
+        texto_completo = []
+        for i, img_b64 in enumerate(imagenes):
+            response = client.chat.completions.create(
+                model="meta-llama/llama-4-scout-17b-16e-instruct",
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": f"data:image/png;base64,{img_b64}"}
+                            },
+                            {
+                                "type": "text",
+                                "text": (
+                                    "Este es un Certificado de Origen (CO) de comercio exterior. "
+                                    "Extraé TODO el texto visible en la imagen, manteniendo la estructura línea por línea. "
+                                    "Es muy importante preservar: números de ítem, códigos NCM (formato XXXX.XX.XX), "
+                                    "cantidades con formato numérico (ej: 1.234,567), unidades (gr, kg, pc), "
+                                    "valores monetarios, y códigos de material (números de 7-8 dígitos después de ';'). "
+                                    "No agregues interpretación, solo el texto exacto línea por línea."
+                                )
+                            }
+                        ]
+                    }
+                ],
+                max_tokens=4096
+            )
+            texto_completo.extend(response.choices[0].message.content.split('\n'))
+
+        return texto_completo
+    except Exception:
+        return []
+
+def groq_vision_fc(path):
+    """Usa Groq Vision para extraer fecha y total EXW de la FC cuando pdfplumber falla."""
+    try:
+        from groq import Groq
+        api_key = st.secrets.get("GROQ_API_KEY", "")
+        if not api_key:
+            return None
+        client = Groq(api_key=api_key)
+        imagenes = pdf_a_imagenes_b64(path)
+        if not imagenes:
+            return None
+
+        # Solo procesamos la primera página para FC (suele ser suficiente)
+        img_b64 = imagenes[0]
+        response = client.chat.completions.create(
+            model="meta-llama/llama-4-scout-17b-16e-instruct",
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/png;base64,{img_b64}"}
+                        },
+                        {
+                            "type": "text",
+                            "text": (
+                                "Esta es una Factura Comercial (FC) de comercio exterior. "
+                                "Extraé TODO el texto visible línea por línea, preservando exactamente: "
+                                "fechas (formato DD/MM/YYYY), totales EXW con sus valores numéricos, "
+                                "totales ARS, y cualquier número monetario. "
+                                "No agregues interpretación, solo el texto exacto línea por línea."
+                            )
+                        }
+                    ]
+                }
+            ],
+            max_tokens=2048
+        )
+        return response.choices[0].message.content.split('\n')
+    except Exception:
+        return None
+
+# ── texto suficiente? ────────────────────────────────────────────────────────
+
+def texto_es_suficiente(lines, min_chars=100):
+    """Determina si el texto extraído por pdfplumber es suficiente."""
+    total = sum(len(l.strip()) for l in lines)
+    return total >= min_chars
+
+# ── leer archivos ────────────────────────────────────────────────────────────
+
 def leer_excel(path):
     wb = openpyxl.load_workbook(path, data_only=True)
     ws_item = wb['Item']
@@ -160,7 +275,7 @@ def leer_excel(path):
             ncm_clean = ncm_raw[:10]
             mat = row[col_mat-1]
             if mat and not str(mat).replace('.','').isdigit():
-                mat = row[5]  # fallback columna 6
+                mat = row[5]
             items.append({'ITEM': row[0], 'NCM': ncm_clean, 'CANTIDAD': row[col_cant-1], 'MARCA_MODEL_OTRO': mat})
     ws_car = wb['Carátula']
     rows_car = list(ws_car.iter_rows(values_only=True))
@@ -170,13 +285,23 @@ def leer_excel(path):
     return {'items': items, 'empresa': empresa, 'facturas': facturas, 'vendedor': vendedor}
 
 def leer_fc(path):
+    # Intento 1: pdfplumber
     full = ''
     with pdfplumber.open(path) as pdf:
         for page in pdf.pages:
             t = page.extract_text()
             if t: full += t + '\n'
+
+    lines = full.split('\n')
+
+    # Fallback Groq si el texto es insuficiente
+    if not texto_es_suficiente(lines):
+        groq_lines = groq_vision_fc(path)
+        if groq_lines:
+            lines = groq_lines
+
     data = {'fecha': '', 'total_exw': None, 'total_ars': False}
-    for l in full.split('\n'):
+    for l in lines:
         m = re.search(r'FECHA\s+(\d{2}/\d{2}/\d{4})', l, re.IGNORECASE)
         if m: data['fecha'] = m.group(1)
         m = re.search(r'TOTAL\s+EXW\s+([\d\.,]+)', l, re.IGNORECASE)
@@ -185,11 +310,18 @@ def leer_fc(path):
     return data
 
 def leer_co_pdf(path):
+    # Intento 1: pdfplumber
     full_lines = []
     with pdfplumber.open(path) as pdf:
         for page in pdf.pages:
             t = page.extract_text()
             if t: full_lines.extend(t.split('\n'))
+
+    # Fallback Groq si el texto es insuficiente
+    if not texto_es_suficiente(full_lines):
+        groq_lines = groq_vision_co(path)
+        if groq_lines:
+            full_lines = groq_lines
 
     produtor = ''
     for l in full_lines[:40]:
@@ -217,7 +349,6 @@ def leer_co_pdf(path):
         m = re.search(r'[Dd]ata[:\s]+(\d{2}/\d{2}/\d{4})', l)
         if m and not data_co: data_co = m.group(1)
 
-    # FIX: acepta gr, kg, pc y variantes anteriores (p con caracteres especiales)
     pattern = re.compile(
         r'^\s*(\d{1,2})\s+(\d{4}\.\d{2}\.\d{2})[^\n]*?([\d\.]+,\d{3})\s+(?:gr|kg|pc|p[çc°¢])\s+([\d\.]+,\d{3})'
     )
@@ -273,31 +404,6 @@ def leer_co_pdf(path):
             if l.strip(): obs_lines.append(l.strip())
     obs = ' '.join(obs_lines).strip()
 
-    # fallback OCR si no se encontraron items
-    if not items:
-        try:
-            from pdf2image import convert_from_bytes
-            import pytesseract
-            with open(path, 'rb') as f:
-                pdf_bytes = f.read()
-            pages = convert_from_bytes(pdf_bytes, dpi=250)
-            texts = [pytesseract.image_to_string(p, lang='eng') for p in pages]
-            full_lines = '\n'.join(texts).split('\n')
-            pattern_ocr = re.compile(r'(\d{4}\.\d{2}\.\d{2})[^\n]*?([\d\.]+,\d{3})\s+(?:gr|kg|pc|p[¢cç°])\s+([\d\.]+,\d{3})', re.IGNORECASE)
-            for i, l in enumerate(full_lines):
-                m = pattern_ocr.search(l)
-                if m:
-                    ncm, cant_str, val_str = m.group(1), m.group(2), m.group(3)
-                    material = None
-                    for j in range(i, min(i+50, len(full_lines))):
-                        mm = mat_re_inline.search(full_lines[j])
-                        if mm: material = int(mm.group(1)); break
-                    items.append({'orden': len(items)+1, 'ncm': ncm, 'cantidad': cant_str,
-                                  'cantidad_num': parse_num(cant_str), 'valor': parse_num(val_str),
-                                  'material': material})
-        except:
-            pass
-
     return {'produtor': produtor, 'importador': importador, 'factura_num': factura_num,
             'data': data_co, 'items': items, 'observaciones': obs}
 
@@ -349,31 +455,21 @@ def generar_reporte(xl, fc_data, co, op_id):
     for col, w in zip('ABCDEFG', [18, 28, 32, 32, 16, 35, 10]):
         ws.column_dimensions[col].width = w
 
-    # co_by_material como lista para soportar material duplicado (ej: 50241223 x2)
     from collections import defaultdict
     co_by_material = defaultdict(list)
     for ci in co['items']:
         if ci['material']:
             co_by_material[ci['material']].append(ci)
 
-    # Para cada item del Excel, busca el mejor match en CO por cantidad
     def buscar_co_item(mat_int, cant_excel):
         candidatos = co_by_material.get(mat_int, [])
         if not candidatos:
             return None
-        # Intentar match exacto o con conversión gr↔kg
         for ci in candidatos:
             cq = ci['cantidad_num']
-            # Match directo
-            if abs(cant_excel - cq) < 0.01:
-                return ci
-            # Excel en kg, CO en gr
-            if abs(cant_excel * 1000 - cq) < 0.5:
-                return ci
-            # Excel en gr, CO en kg
-            if abs(cant_excel / 1000 - cq) < 0.0001:
-                return ci
-        # Si no hay match exacto, devolver el primero (para mostrar la diferencia)
+            if abs(cant_excel - cq) < 0.01: return ci
+            if abs(cant_excel * 1000 - cq) < 0.5: return ci
+            if abs(cant_excel / 1000 - cq) < 0.0001: return ci
         return candidatos[0]
 
     row = 3
@@ -390,7 +486,6 @@ def generar_reporte(xl, fc_data, co, op_id):
         if co_item:
             res_ncm  = "✅ OK" if ncm_10 == co_item['ncm'].replace('.','') else "❌ DIFERENCIA"
             cq = co_item['cantidad_num']
-            # Comparar tolerando conversión gr↔kg
             match_cant = (abs(cant_exc - cq) < 0.01 or
                           abs(cant_exc * 1000 - cq) < 0.5 or
                           abs(cant_exc / 1000 - cq) < 0.0001)
