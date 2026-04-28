@@ -397,9 +397,9 @@ def leer_co_pdf(path):
 
     materiales_encontrados = {it['material'] for it in items if it['material']}
     for i, l in enumerate(full_lines):
-        mm = mat_re_inline.search(l)
+        mm = mat_re_semicolon.search(l)
         if not mm and i > 0 and ';' in full_lines[i-1]:
-            mm = mat_re_nextline.match(l)
+            mm = mat_re_solosemi.match(l)
         if mm:
             mat = int(mm.group(1))
             if mat not in materiales_encontrados:
