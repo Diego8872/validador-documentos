@@ -353,16 +353,35 @@ def leer_co_pdf(path):
         r'^\s*(\d{1,2})\s+(\d{4}\.\d{2}\.\d{2})[^\n]*?([\d\.]+,\d{3})\s+(?:gr|kg|pc|p[çc°¢])\s+([\d\.]+,\d{3})'
     )
 
-    mat_re_inline   = re.compile(r';\s*(\d{7,8})(?:\s|$)')
-    mat_re_nextline = re.compile(r'^\s*(\d{7,8})\s*$')
+    mat_re_semicolon = re.compile(r';\s*(\d{7,8})(?:\s|$)')   # con ";" como pista fuerte
+    mat_re_solosemi  = re.compile(r'^\s*;\s*(\d{7,8})\s*$')   # línea que empieza con ";"
+    mat_re_candidato = re.compile(r'(?<!\d)(\d{7,8})(?!\d)')  # fallback: 7-8 dígitos exactos
+    mat_re_ncm       = re.compile(r'\d{4}\.\d{2}\.\d{2}')
+    mat_re_djo       = re.compile(r'\d{6,8}\s*[-•]\s*\d{2}/\d{2}/\d{4}')
+
+    def es_material_valido(linea):
+        if mat_re_ncm.search(linea): return False
+        if mat_re_djo.search(linea): return False
+        if re.search(r'\d+,\d+', linea): return False
+        return True
 
     def buscar_material(lines, start, window=50):
-        for j in range(start, min(start+window, len(lines))):
-            mm = mat_re_inline.search(lines[j])
+        end = min(start + window, len(lines))
+
+        # Paso 1: buscar con ";" como pista fuerte
+        for j in range(start, end):
+            mm = mat_re_semicolon.search(lines[j])
             if mm: return int(mm.group(1))
-            if j > start and ';' in lines[j-1]:
-                mm2 = mat_re_nextline.match(lines[j])
-                if mm2: return int(mm2.group(1))
+            mm = mat_re_solosemi.match(lines[j])
+            if mm: return int(mm.group(1))
+
+        # Paso 2: fallback sin ";", descartando NCM/DJO/cantidades
+        for j in range(start, end):
+            linea = lines[j]
+            if not es_material_valido(linea): continue
+            mm = mat_re_candidato.search(linea)
+            if mm: return int(mm.group(1))
+
         return None
 
     items = []
