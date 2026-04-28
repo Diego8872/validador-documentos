@@ -424,7 +424,7 @@ def leer_co_pdf(path):
     obs = ' '.join(obs_lines).strip()
 
     return {'produtor': produtor, 'importador': importador, 'factura_num': factura_num,
-            'data': data_co, 'items': items, 'observaciones': obs}
+            'data': data_co, 'items': items, 'observaciones': obs, '_debug_lines': full_lines}
 
 
 def generar_reporte(xl, fc_data, co, op_id):
@@ -643,6 +643,8 @@ if todos_ok:
                         st.write(f"❌ pdf2image ERROR: {e2}")
                     groq_key = st.secrets.get("GROQ_API_KEY", "")
                     st.write("✅ GROQ_API_KEY cargada" if groq_key else "❌ GROQ_API_KEY no encontrada")
+                    st.text_area("Texto extraído del CO (primeras 3000 chars):", 
+                        value='\n'.join(co.get('_debug_lines', []))[:3000], height=300)
                 # ── FIN DIAGNÓSTICO ───────────────────────────────────────
 
                 op_id = re.search(r'(\d{5,})', excel_file.name)
