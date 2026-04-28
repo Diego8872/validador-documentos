@@ -425,7 +425,7 @@ def leer_co_pdf(path):
     obs = ' '.join(obs_lines).strip()
 
     return {'produtor': produtor, 'importador': importador, 'factura_num': factura_num,
-            'data': data_co, 'items': items, 'observaciones': obs, '_debug_lines': full_lines}
+            'data': data_co, 'items': items, 'observaciones': obs}
 
 
 def generar_reporte(xl, fc_data, co, op_id):
@@ -629,24 +629,6 @@ if todos_ok:
 
                 st.markdown('<div class="status-bar">📄 Procesando CO...</div>', unsafe_allow_html=True)
                 co = leer_co_pdf(co_path)
-
-                # ── DIAGNÓSTICO TEMPORAL ──────────────────────────────────
-                with st.expander("🔍 Debug CO (borrar después)", expanded=True):
-                    st.write(f"**Items encontrados:** {len(co['items'])}")
-                    st.write(f"**Factura:** {co['factura_num']}")
-                    for it in co['items']:
-                        st.write(f"Item {it['orden']} | NCM: {it['ncm']} | Cant: {it['cantidad']} | Material: {it['material']}")
-                    try:
-                        from pdf2image import convert_from_path
-                        pages = convert_from_path(co_path, dpi=100)
-                        st.write(f"✅ pdf2image OK — {len(pages)} páginas convertidas")
-                    except Exception as e2:
-                        st.write(f"❌ pdf2image ERROR: {e2}")
-                    groq_key = st.secrets.get("GROQ_API_KEY", "")
-                    st.write("✅ GROQ_API_KEY cargada" if groq_key else "❌ GROQ_API_KEY no encontrada")
-                    st.text_area("Texto extraído del CO (primeras 3000 chars):", 
-                        value='\n'.join(co.get('_debug_lines', []))[:3000], height=300)
-                # ── FIN DIAGNÓSTICO ───────────────────────────────────────
 
                 op_id = re.search(r'(\d{5,})', excel_file.name)
                 op_id = op_id.group(1) if op_id else 'XXXX'
