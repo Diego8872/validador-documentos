@@ -165,7 +165,8 @@ def pdf_a_imagenes_b64(path, dpi=200):
         return []
 
 def groq_vision_co(path):
-    """Usa Groq Vision para extraer texto del CO cuando pdfplumber falla."""
+    """Usa Groq Vision para extraer items del CO como JSON estructurado."""
+    import json
     try:
         from groq import Groq
         api_key = st.secrets.get("GROQ_API_KEY", "")
@@ -176,7 +177,7 @@ def groq_vision_co(path):
         if not imagenes:
             return []
 
-        texto_completo = []
+        items_json = []
         for i, img_b64 in enumerate(imagenes):
             response = client.chat.completions.create(
                 model="meta-llama/llama-4-scout-17b-16e-instruct",
@@ -192,12 +193,12 @@ def groq_vision_co(path):
                                 "type": "text",
                                 "text": (
                                     "Este es un Certificado de Origen (CO) de comercio exterior. "
-                                    "Extraé el texto de esta imagen como texto plano. Sin Markdown, sin tablas con pipes, sin asteriscos. "
-                                    "Para cada fila de la tabla de productos escribí una línea así: "
-                                    "ORDEN NCM CANTIDAD UNIDAD VALOR "
-                                    "y en la línea siguiente el código de material precedido de punto y coma: ; 50568791 "
-                                    "Ejemplo de salida:\n1 3307.20.10 26.880,000 pc 104.351.116,800\n; 50568791\n "
-                                    "Preservá exactamente los números y formatos numéricos con punto y coma decimal."
+                                    "Extraé la tabla de productos y devolvé SOLO un JSON válido, sin texto adicional, sin markdown. "
+                                    "Formato exacto: "
+                                    '[{"orden":1,"ncm":"3307.20.10","cantidad":"26.880,000","unidad":"pc","valor":"104.351.116,800","material":"50568791"}] '
+                                    "El campo material es el número de 7-8 dígitos que aparece después del punto y coma (;) en la descripción del producto. "
+                                    "Incluí todos los ítems visibles en la tabla. "
+                                    "Responde SOLO con el array JSON, nada más."
                                 )
                             }
                         ]
@@ -205,9 +206,17 @@ def groq_vision_co(path):
                 ],
                 max_tokens=4096
             )
-            texto_completo.extend(response.choices[0].message.content.split('\n'))
+            raw = response.choices[0].message.content.strip()
+            # limpiar posibles markdown fences
+            raw = raw.replace("```json", "").replace("```", "").strip()
+            try:
+                parsed = json.loads(raw)
+                if isinstance(parsed, list):
+                    items_json.extend(parsed)
+            except Exception:
+                pass
 
-        return texto_completo
+        return items_json
     except Exception:
         return []
 
@@ -319,10 +328,9 @@ def leer_co_pdf(path):
             if t: full_lines.extend(t.split('\n'))
 
     # Fallback Groq si el texto es insuficiente
+    groq_items = []
     if not texto_es_suficiente(full_lines):
-        groq_lines = groq_vision_co(path)
-        if groq_lines:
-            full_lines = groq_lines
+        groq_items = groq_vision_co(path)  # devuelve lista de dicts JSON
 
     produtor = ''
     for l in full_lines[:40]:
@@ -385,35 +393,55 @@ def leer_co_pdf(path):
 
         return None
 
-    items = []
-    for i, l in enumerate(full_lines):
-        m = pattern.match(l)
-        if m:
-            orden, ncm, cant_str, val_str = int(m.group(1)), m.group(2), m.group(3), m.group(4)
-            material = buscar_material(full_lines, i)
-            if not any(it['orden'] == orden for it in items):
-                items.append({'orden': orden, 'ncm': ncm, 'cantidad': cant_str,
-                              'cantidad_num': parse_num(cant_str), 'valor': parse_num(val_str),
-                              'material': material})
+    # Si Groq devolvió items JSON, usarlos directamente
+    if groq_items:
+        items = []
+        for g in groq_items:
+            try:
+                mat = int(str(g.get('material', '') or '').strip()) if g.get('material') else None
+            except:
+                mat = None
+            cant_str = str(g.get('cantidad', ''))
+            val_str  = str(g.get('valor', '0'))
+            ncm      = str(g.get('ncm', ''))
+            items.append({
+                'orden': int(g.get('orden', len(items)+1)),
+                'ncm': ncm,
+                'cantidad': cant_str,
+                'cantidad_num': parse_num(cant_str),
+                'valor': parse_num(val_str),
+                'material': mat
+            })
+    else:
+        items = []
+        for i, l in enumerate(full_lines):
+            m = pattern.match(l)
+            if m:
+                orden, ncm, cant_str, val_str = int(m.group(1)), m.group(2), m.group(3), m.group(4)
+                material = buscar_material(full_lines, i)
+                if not any(it['orden'] == orden for it in items):
+                    items.append({'orden': orden, 'ncm': ncm, 'cantidad': cant_str,
+                                  'cantidad_num': parse_num(cant_str), 'valor': parse_num(val_str),
+                                  'material': material})
 
-    materiales_encontrados = {it['material'] for it in items if it['material']}
-    for i, l in enumerate(full_lines):
-        mm = mat_re_semicolon.search(l)
-        if not mm and i > 0 and ';' in full_lines[i-1]:
-            mm = mat_re_solosemi.match(l)
-        if mm:
-            mat = int(mm.group(1))
-            if mat not in materiales_encontrados:
-                for back in range(i-1, max(i-60, -1), -1):
-                    m = re.search(r'(\d{4}\.\d{2}\.\d{2})[^\n]*?([\d\.]+,\d{3})\s+(?:gr|kg|pc|p[çc°¢])\s+([\d\.]+,\d{3})', full_lines[back])
-                    if m:
-                        ncm, cant_str = m.group(1), m.group(2)
-                        for it in items:
-                            if it['ncm'] == ncm and it['cantidad'] == cant_str and it['material'] is None:
-                                it['material'] = mat
-                                materiales_encontrados.add(mat)
-                                break
-                        break
+        materiales_encontrados = {it['material'] for it in items if it['material']}
+        for i, l in enumerate(full_lines):
+            mm = mat_re_semicolon.search(l)
+            if not mm and i > 0 and ';' in full_lines[i-1]:
+                mm = mat_re_solosemi.match(l)
+            if mm:
+                mat = int(mm.group(1))
+                if mat not in materiales_encontrados:
+                    for back in range(i-1, max(i-60, -1), -1):
+                        m = re.search(r'(\d{4}\.\d{2}\.\d{2})[^\n]*?([\d\.]+,\d{3})\s+(?:gr|kg|pc|p[çc°¢])\s+([\d\.]+,\d{3})', full_lines[back])
+                        if m:
+                            ncm, cant_str = m.group(1), m.group(2)
+                            for it in items:
+                                if it['ncm'] == ncm and it['cantidad'] == cant_str and it['material'] is None:
+                                    it['material'] = mat
+                                    materiales_encontrados.add(mat)
+                                    break
+                            break
 
     obs_lines = []
     capture = False
