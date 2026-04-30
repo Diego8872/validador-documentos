@@ -452,7 +452,7 @@ def leer_co_pdf(path):
 
         # Paso 2: línea sola con número de 7-8 dígitos dentro del bloque
         for j in range(start, fin_real):
-            mm = mat_re_nextline.match(lines[j])
+            mm = mat_re_solosemi.match(lines[j]) or re.match(r'^\s*(\d{7,8})\s*$', lines[j])
             if mm:
                 num = int(mm.group(1))
                 prev = lines[j-1] if j > 0 else ''
