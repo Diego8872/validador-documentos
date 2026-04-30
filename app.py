@@ -177,44 +177,42 @@ def groq_vision_co(path):
         if not imagenes:
             return []
 
-        items_json = []
-        for i, img_b64 in enumerate(imagenes):
-            response = client.chat.completions.create(
-                model="meta-llama/llama-4-scout-17b-16e-instruct",
-                messages=[
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "image_url",
-                                "image_url": {"url": f"data:image/png;base64,{img_b64}"}
-                            },
-                            {
-                                "type": "text",
-                                "text": (
-                                    "Este es un Certificado de Origen (CO) de comercio exterior. "
-                                    "Extraé la tabla de productos y devolvé SOLO un JSON válido, sin texto adicional, sin markdown. "
-                                    "Formato exacto: "
-                                    '[{"orden":1,"ncm":"3307.20.10","cantidad":"26.880,000","unidad":"pc","valor":"104.351.116,800","material":"50568791"}] '
-                                    "El campo material es el número de 7-8 dígitos que aparece después del punto y coma (;) en la descripción del producto. "
-                                    "Incluí todos los ítems visibles en la tabla. "
-                                    "Responde SOLO con el array JSON, nada más."
-                                )
-                            }
-                        ]
-                    }
-                ],
-                max_tokens=4096
+        # Armar contenido con todas las páginas en un solo request
+        content_parts = []
+        for img_b64 in imagenes:
+            content_parts.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:image/png;base64,{img_b64}"}
+            })
+        content_parts.append({
+            "type": "text",
+            "text": (
+                "Este documento es un Certificado de Origen (CO) de comercio exterior, puede tener varias páginas. "
+                "Extraé TODOS los ítems de la tabla de productos de TODAS las páginas y devolvé SOLO un JSON válido, sin texto adicional, sin markdown. "
+                "Formato exacto: "
+                '[{"orden":1,"ncm":"3307.20.10","cantidad":"26.880,000","unidad":"pc","valor":"104.351.116,800","material":"50568791"}] '
+                "IMPORTANTE: "
+                "- El campo material es el número de 7-8 dígitos que aparece después del punto y coma (;) en la descripción. "
+                "- NO omitas ningún ítem. Contá los ítems por su número de orden y verificá que estén todos. "
+                "- Preservá el formato numérico exacto con puntos y comas (ej: 26.880,000). "
+                "Responde SOLO con el array JSON completo, nada más."
             )
-            raw = response.choices[0].message.content.strip()
-            # limpiar posibles markdown fences
-            raw = raw.replace("```json", "").replace("```", "").strip()
-            try:
-                parsed = json.loads(raw)
-                if isinstance(parsed, list):
-                    items_json.extend(parsed)
-            except Exception:
-                pass
+        })
+
+        response = client.chat.completions.create(
+            model="meta-llama/llama-4-scout-17b-16e-instruct",
+            messages=[{"role": "user", "content": content_parts}],
+            max_tokens=4096
+        )
+        raw = response.choices[0].message.content.strip()
+        raw = raw.replace("```json", "").replace("```", "").strip()
+        items_json = []
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, list):
+                items_json = parsed
+        except Exception:
+            pass
 
         return items_json
     except Exception:
@@ -411,8 +409,13 @@ def leer_co_pdf(path):
             m = re.search(r'[Dd]ata[:\s]+(\d{2}/\d{2}/\d{4})', l)
             if m and not data_co: data_co = m.group(1)
 
+    # Patrón: orden NCM ... cantidad unidad valor en la misma línea
     pattern = re.compile(
-        r'^\s*(\d{1,2})\s+(\d{4}\.\d{2}\.\d{2})[^\n]*?([\d\.]+,\d{3})\s+(?:gr|kg|pc|p[çc°¢])\s+([\d\.]+,\d{3})'
+        r'^\s*(\d{1,2})\s+(\d{4}\.\d{2}\.\d{2})[^\n]*?([\d\.]+,\d{3})\s+(?:gr|kg|pc|pç|p[çc°¢])\s+([\d\.]+,\d{3})'
+    )
+    # Patrón alternativo: orden NCM ... cantidad pç (formato de este CO)
+    pattern_alt = re.compile(
+        r'^\s*(\d{1,2})\s+(\d{4}\.\d{2}\.\d{2}).*?([\d\.]+,\d{3})\s+pç.*?([\d\.]+,\d{3})'
     )
 
     mat_re_semicolon = re.compile(r';\s*(\d{7,8})(?:\s|$)')   # con ";" como pista fuerte
@@ -427,22 +430,35 @@ def leer_co_pdf(path):
         if re.search(r'\d+,\d+', linea): return False
         return True
 
+    # Regex para detectar inicio de nuevo ítem (número de orden + NCM)
+    pat_nuevo_item = re.compile(r'^\s*\d{1,2}\s+\d{4}\.\d{2}\.\d{2}')
+
     def buscar_material(lines, start, window=50):
         end = min(start + window, len(lines))
 
-        # Paso 1: buscar con ";" como pista fuerte
-        for j in range(start, end):
+        # Calcular fin real: parar antes del próximo ítem
+        fin_real = end
+        for j in range(start + 1, end):
+            if pat_nuevo_item.match(lines[j]):
+                fin_real = j
+                break
+
+        # Paso 1: buscar con ";" inline dentro del bloque del ítem
+        for j in range(start, fin_real):
             mm = mat_re_semicolon.search(lines[j])
             if mm: return int(mm.group(1))
             mm = mat_re_solosemi.match(lines[j])
             if mm: return int(mm.group(1))
 
-        # Paso 2: fallback sin ";", descartando NCM/DJO/cantidades
-        for j in range(start, end):
-            linea = lines[j]
-            if not es_material_valido(linea): continue
-            mm = mat_re_candidato.search(linea)
-            if mm: return int(mm.group(1))
+        # Paso 2: línea sola con número de 7-8 dígitos dentro del bloque
+        for j in range(start, fin_real):
+            mm = mat_re_nextline.match(lines[j])
+            if mm:
+                num = int(mm.group(1))
+                prev = lines[j-1] if j > 0 else ''
+                next_l = lines[j+1] if j+1 < fin_real else ''
+                if not re.search(r'\d{4}\.\d{2}\.\d{2}', prev):
+                    return num
 
         return None
 
@@ -468,7 +484,7 @@ def leer_co_pdf(path):
     else:
         items = []
         for i, l in enumerate(full_lines):
-            m = pattern.match(l)
+            m = pattern.match(l) or pattern_alt.match(l)
             if m:
                 orden, ncm, cant_str, val_str = int(m.group(1)), m.group(2), m.group(3), m.group(4)
                 material = buscar_material(full_lines, i)
